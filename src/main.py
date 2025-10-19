@@ -1,9 +1,9 @@
 import pygame, sys
+from pathlib import Path
 import random
 from settings import WIDTH, HEIGHT, TITLE, FPS, TILE_SIZE
 from utils import load_spritesheet
 from level import Level
-
 from score import load_score, add_points, subtract_points
 
 STATE_MENU = "menu"
@@ -11,7 +11,6 @@ STATE_PLAYING = "playing"
 STATE_PAUSED = "paused"
 STATE_VICTORY = "victory"
 STATE_LOST = "lost"
-
 
 class Button:
     def __init__(self, rect, text, font):
@@ -24,110 +23,72 @@ class Button:
         self.hovered = self.rect.collidepoint(mouse_pos)
 
     def was_clicked(self, event):
-        # Left-click inside the rect triggers immediately (doesn't depend on hover)
         return (
-                event.type == pygame.MOUSEBUTTONDOWN and
-                event.button == 1 and
-                self.rect.collidepoint(event.pos)
+            event.type == pygame.MOUSEBUTTONDOWN and
+            event.button == 1 and
+            self.rect.collidepoint(event.pos)
         )
 
     def draw(self, screen):
-        color = (120, 160, 255) if self.hovered else (80, 120, 200)
-        pygame.draw.rect(screen, color, self.rect, border_radius=8)
+        cor = (120, 160, 255) if self.hovered else (80, 120, 200)
+        pygame.draw.rect(screen, cor, self.rect, border_radius=8)
         label = self.font.render(self.text, True, (255, 255, 255))
         screen.blit(label, label.get_rect(center=self.rect.center))
 
-
-# ===== Procedural Level Generation =====
+# ===== Geração Procedural =====
 def _jump_tiles_from_settings():
-    # Estimate max vertical tiles the player can gain from a full jump
-    # Using physics: max_height ~= v^2 / (2g)
     from settings import JUMP_VELOCITY, GRAVITY, TILE_SIZE
     v = abs(JUMP_VELOCITY)
     g = GRAVITY
     px_height = (v * v) / (2.0 * g)
-    return max(2, int(px_height // TILE_SIZE))  # clamp to at least 2 tiles
-
+    return max(2, int(px_height // TILE_SIZE))
 
 def _derived_reach_tiles():
-    """
-    Derive conservative tile-reach numbers from the actual physics:
-      - max vertical tiles from v^2/(2g)
-      - horizontal tiles from PLAYER_SPEED * total airtime
-    We subtract one tile horizontally for takeoff/landing clearance so gaps are safe.
-    """
     from settings import JUMP_VELOCITY, GRAVITY, TILE_SIZE, PLAYER_SPEED
-
-    v = abs(JUMP_VELOCITY)  # 16 with your current settings
-    g = GRAVITY  # 0.8
-    max_height_px = (v * v) / (2.0 * g)  # ~160 px with your settings
+    v = abs(JUMP_VELOCITY)
+    g = GRAVITY
+    max_height_px = (v * v) / (2.0 * g)
     max_up_tiles = max(1, int(max_height_px // TILE_SIZE))
-
-    # Your physics integrates per frame (no dt on movement), so compute airtime in frames:
-    airtime_frames = int((2.0 * v) / g)  # ~40 frames now
+    airtime_frames = int((2.0 * v) / g)
     horiz_px = PLAYER_SPEED * airtime_frames
-    max_gap_tiles = max(1, int(horiz_px // TILE_SIZE) - 1)  # conservative
-
+    max_gap_tiles = max(1, int(horiz_px // TILE_SIZE) - 1)
     return max_up_tiles, max_gap_tiles
 
-
 def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=None):
-    """
-    Chunk-based generator that guarantees reachability from spawn to exit,
-    enforces headroom, and carves occasional 2-3 tile death pits in the ground.
-    Tiles: '.' empty  'X' solid  'P' player  'E' exit  'C' gem
-    """
     rnd = random.Random(seed) if seed is not None else random
-    from settings import TILE_SIZE
     MAX_UP, MAX_GAP = _derived_reach_tiles()
     W, H = width_tiles, height_tiles
     GY = H - 1
 
-    # init empty grid
     grid = [['.' for _ in range(W)] for _ in range(H)]
-    # base ground
     for x in range(W):
         grid[GY][x] = 'X'
 
-    # ----- carve occasional death pits (2-3 tiles) and track them -----
-    pit_ranges = []  # list of (start_x, end_x) tuples
+    pit_ranges = []
     pit_x = 8
     while pit_x < W - 10:
-        if rnd.random() < 0.3:  # 30% chance to create a pit here
+        if rnd.random() < 0.3:
             pit_w = rnd.randint(2, 3)
             pit_start = pit_x
             pit_end = min(W - 4, pit_x + pit_w)
             for px in range(pit_start, pit_end):
-                grid[GY][px] = '.'  # hole to fall through
+                grid[GY][px] = '.'
             pit_ranges.append((pit_start, pit_end - 1))
             pit_x += pit_w + rnd.randint(6, 10)
         else:
             pit_x += rnd.randint(4, 8)
 
-    def is_over_pit(x, y):
-        """Check if position (x, y) is directly above a pit"""
-        if y != GY:  # only check if we're at ground level
-            return False
-        for pit_start, pit_end in pit_ranges:
-            if pit_start <= x <= pit_end:
-                return True
-        return False
-
     def platform_crosses_pit(x0, x1, y):
-        """Check if a platform from x0 to x1 at height y would cross over a pit"""
-        if y != GY:  # only care about ground-level platforms
+        if y != GY:
             return False
         for pit_start, pit_end in pit_ranges:
-            # Check if platform range overlaps with pit range
             if not (x1 < pit_start or x0 > pit_end):
                 return True
         return False
 
-    # spawn
     spawn_x, spawn_y = 3, GY - 1
     grid[spawn_y][spawn_x] = 'P'
 
-    # Chunk primitives (each returns exit_x, exit_y, gem spots)
     def headroom_clear(y, x0, x1, hr=2):
         for x in range(max(1, x0), min(W - 1, x1) + 1):
             for k in range(1, hr + 1):
@@ -143,57 +104,43 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
     def chunk_flat(x0, y):
         length = rnd.randint(5, 9)
         x1 = x0 + length - 1
-
-        # If at ground level and crosses pit, shorten or skip
         if platform_crosses_pit(x0, x1, y):
-            # Try to place before the pit
             for pit_start, pit_end in pit_ranges:
                 if x0 < pit_start <= x1:
                     x1 = pit_start - 1
                     break
-
-            if x1 - x0 < 3:  # platform too short, skip it
+            if x1 - x0 < 3:
                 return x0, y, []
-
         stamp_platform(y, x0, x1, 2)
         mid = x0 + (x1 - x0) // 2
         return x1, y, [(mid, y - 1)]
 
     def chunk_gap(x0, y):
         gap = rnd.randint(2, min(MAX_GAP, 3))
-
-        # Left land - check if it's over a pit
         left_x1 = x0 + 2
         if platform_crosses_pit(x0, left_x1, y):
-            return x0, y, []  # skip this chunk
-
+            return x0, y, []
         stamp_platform(y, x0, left_x1, 2)
         headroom_clear(y, x0 + 3, x0 + 2 + gap, 2)
-
-        # Right land
         rx0 = x0 + 3 + gap
         rx1 = rx0 + 2
         if platform_crosses_pit(rx0, rx1, y):
-            return left_x1, y, []  # skip right platform
-
+            return left_x1, y, []
         stamp_platform(y, rx0, rx1, 2)
         return rx1, y, []
 
     def chunk_stairs_up(x0, y):
-        steps = rnd.randint(2, min(3, MAX_UP))
+        rnd_steps = rnd.randint(2, min(3, MAX_UP))
         width = 3
         gem_spots = []
-        cx = x0
-        cy = y
-        for s in range(steps):
-            # Check if this step would be over a pit
+        cx, cy = x0, y
+        for _ in range(rnd_steps):
             if platform_crosses_pit(cx, cx + width - 1, cy):
                 break
             stamp_platform(cy, cx, cx + width - 1, 2)
             gem_spots.append((cx + 1, cy - 1))
             cx += width
             cy -= 1
-
         if not platform_crosses_pit(cx, cx + width - 1, cy):
             stamp_platform(cy, cx, cx + width - 1, 2)
         return cx + width - 1, cy, gem_spots
@@ -203,12 +150,10 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
         steps = rnd.randint(2, min(3, MAX_UP, max(2, max_steps_possible)))
         width = 3
         gem_spots = []
-        cx = x0
-        cy = y
-        for s in range(steps):
+        cx, cy = x0, y
+        for _ in range(steps):
             if cy >= GY:
                 break
-            # Check if this step would be over a pit
             if platform_crosses_pit(cx, cx + width - 1, cy):
                 break
             stamp_platform(cy, cx, cx + width - 1, 2)
@@ -216,7 +161,6 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
                 gem_spots.append((cx + 1, cy - 1))
             cx += width
             cy += 1
-
         cy = min(cy, GY)
         if not platform_crosses_pit(cx, cx + width - 1, cy):
             stamp_platform(cy, cx, cx + width - 1, 2)
@@ -227,15 +171,11 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
         ny = max(2, min(GY - 2, y + dy))
         length = rnd.randint(3, 5)
         x1 = x0 + length - 1
-
-        # Floating platforms are safe from pits, but check anyway for ground level
         if platform_crosses_pit(x0, x1, ny):
-            ny = max(2, GY - 2)  # move it up if at ground level
-
+            ny = max(2, GY - 2)
         stamp_platform(ny, x0, x1, 2)
         return x1, ny, [(x0 + length // 2, ny - 1)]
 
-    # Build by stitching chunks with constraints
     chunks = [("flat", 3), ("gap", 2), ("stairs_up", 2), ("stairs_down", 2), ("floater", 2)]
 
     x = spawn_x + 2
@@ -246,10 +186,8 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
         available_chunks = chunks[:]
         if y >= GY - 2:
             available_chunks = [c for c in chunks if c[0] != "stairs_down"]
-
         if not available_chunks:
             available_chunks = [("flat", 1)]
-
         name = rnd.choices([c[0] for c in available_chunks], weights=[c[1] for c in available_chunks])[0]
 
         if name == "flat":
@@ -263,7 +201,6 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
         else:
             nx, ny, gems = chunk_floater(x, y)
 
-        # Reachability check
         if abs(ny - y) > MAX_UP or (nx - x) > (MAX_GAP * 2):
             nx, ny, gems = chunk_flat(x, y)
 
@@ -271,13 +208,11 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
         x = nx + 2
         y = ny
 
-    # Exit within reach of last foothold
     last_x, last_y = footholds[-1]
     exit_x = min(W - 3, last_x + min(MAX_GAP, W - 3 - last_x))
     exit_y = last_y
     grid[exit_y][exit_x] = 'E'
 
-    # Gems
     if gem_count is None:
         gem_count = rnd.randint(3, 6)
     candidates = []
@@ -290,7 +225,6 @@ def generate_level_layout(width_tiles=42, height_tiles=11, seed=None, gem_count=
 
     return [''.join(row) for row in grid]
 
-
 def generate_level_pack(num_levels=3, width_tiles=42, height_tiles=11, seed=None):
     rnd = random.Random(seed) if seed is not None else random
     return [
@@ -298,51 +232,127 @@ def generate_level_pack(num_levels=3, width_tiles=42, height_tiles=11, seed=None
         for _ in range(num_levels)
     ]
 
+# ===== Fim Procedural =====
 
-# ===== End Procedural =====
 def load_assets():
+    # tenta achar uma pasta 'assets' válida
+    import os
+    here = Path(__file__).resolve().parent
+    candidate_roots = [
+        here / "assets",
+        here.parent / "assets",
+        Path(os.getcwd()) / "assets",
+    ]
+    ASSETS_ROOT = None
+    for c in candidate_roots:
+        if c.exists():
+            ASSETS_ROOT = c
+            break
+    if ASSETS_ROOT is None:
+        ASSETS_ROOT = here / "assets"
+
+    def ap(*parts):
+        return ASSETS_ROOT.joinpath(*parts)
+
     assets = {}
-    # Player animations (32x32 frames)
+
+    # player (32x32 -> escala pra TILE_SIZE)
     assets['player_anims'] = {
-        'idle': load_spritesheet("assets/player/Idle.png", 32, 32),
-        'run': load_spritesheet("assets/player/Run.png", 32, 32),
-        'jump': load_spritesheet("assets/player/Jump.png", 32, 32),
-        'fall': load_spritesheet("assets/player/Fall.png", 32, 32),
+        'idle': load_spritesheet(str(ap("player", "Idle.png")), 32, 32),
+        'run' : load_spritesheet(str(ap("player", "Run.png")), 32, 32),
+        'jump': load_spritesheet(str(ap("player", "Jump.png")), 32, 32),
+        'fall': load_spritesheet(str(ap("player", "Fall.png")), 32, 32),
     }
-    # Scale player frames up to TILE_SIZE
     for k, frames in assets['player_anims'].items():
         assets['player_anims'][k] = [pygame.transform.scale(f, (TILE_SIZE, TILE_SIZE)) for f in frames]
 
-    # Coin frames (gems)
-    # Coin spritesheet (single vertical image)
-    assets['coin_image'] = pygame.image.load("assets/collectibles/gem_1.png").convert_alpha()
+    # tiles
+    def _load_img(p):
+        try:
+            return pygame.image.load(p).convert_alpha()
+        except Exception:
+            return None
 
-    # Tile image
-    assets['tile'] = pygame.image.load("assets/tiles/tile.png").convert_alpha()
+    tileset_dir = ap("tileset")
+    assets['tiles'] = {
+        'grass_mid'        : _load_img(str(tileset_dir / "grasstilemid.png")),
+        'grass_corner_left': _load_img(str(tileset_dir / "grasstilecornerleft.png")),
+        'grass_corner_right': _load_img(str(tileset_dir / "grasstilecornerright.png")),
+        'dirt_mid'         : _load_img(str(tileset_dir / "dirttilemid.png")),
+        'dirt_corner_left' : _load_img(str(tileset_dir / "dirttilecornerleft.png")),
+        'dirt_corner_right': _load_img(str(tileset_dir / "dirttilecornerright.png")),
+        'box'              : _load_img(str(tileset_dir / "box.png")),
+        'platform'         : _load_img(str(tileset_dir / "platform.png")),
+    }
+    if not assets['tiles']['grass_mid']:
+        fallback = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        fallback.fill((100, 200, 100))
+        assets['tiles']['grass_mid'] = fallback
 
-    # Exit flag
-    flag_sheet = pygame.image.load("assets/flags/exit.png").convert_alpha()
-    fw, fh = flag_sheet.get_size()
-    if fw > fh:
-        frame_w = fh  # assume square frames laid horizontally
-        flag = flag_sheet.subsurface(pygame.Rect(0, 0, frame_w, fh))
-    else:
-        flag = flag_sheet
-    assets['flag'] = flag
+    # moeda e bandeira (placeholders se não houver arquivo)
+    try:
+        assets['coin_image'] = pygame.image.load(str(ap("coin.png"))).convert_alpha()
+    except Exception:
+        coin_h = 16
+        coin_w = coin_h * 4
+        surf = pygame.Surface((coin_w, coin_h), pygame.SRCALPHA)
+        for i in range(4):
+            pygame.draw.circle(surf, (255, 215, 0), (coin_h//2 + i*coin_h, coin_h//2), coin_h//2)
+            pygame.draw.circle(surf, (255, 240, 170), (coin_h//2 + i*coin_h, coin_h//2), coin_h//3, 2)
+        assets['coin_image'] = surf
 
-    # Background
-    assets['background'] = pygame.image.load("assets/backgrounds/bg.png").convert_alpha()
+    try:
+        assets['flag'] = pygame.image.load(str(ap("flag.png"))).convert_alpha()
+    except Exception:
+        flag = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        pygame.draw.rect(flag, (80, 50, 30), (10, 8, 6, TILE_SIZE-12))
+        pygame.draw.polygon(flag, (200, 40, 50), [(16, 10),(36, 18),(16, 26)])
+        assets['flag'] = flag
+
+    # parallax (opcional)
+    par_dir = ap("parallax", "forest")
+    layers = []
+    def add_layer(name, speed):
+        p = par_dir / name
+        img = _load_img(str(p))
+        if img:
+            layers.append({'image': img, 'speed': speed})
+    add_layer("forest_sky.png",      0.05)
+    add_layer("forest_moon.png",     0.08)
+    add_layer("forest_mountain.png", 0.12)
+    add_layer("forest_back.png",     0.22)
+    add_layer("forest_mid.png",      0.35)
+    add_layer("forest_short.png",    0.55)
+    assets['parallax_layers'] = layers
+
+    # sons (opcionais)
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+    except Exception:
+        pass
+
+    def _load_sound(p):
+        try:
+            return pygame.mixer.Sound(p)
+        except Exception:
+            return None
+
+    sfx_dir = ap("sfx")
+    assets['sfx'] = {
+        'jump': _load_sound(str(sfx_dir / "pular.wav")),
+        'coin': _load_sound(str(sfx_dir / "moeda.wav")),
+        'death': _load_sound(str(sfx_dir / "death.wav")),
+        'flag': _load_sound(str(sfx_dir / "passar.wav")),
+    }
 
     return assets
-
 
 def draw_centered_text(screen, font, text, y, color=(240, 240, 240)):
     surf = font.render(text, True, color)
     screen.blit(surf, (WIDTH // 2 - surf.get_width() // 2, y))
 
-
 def main():
-    # Ensure working dir at project root if launching from src/
     import os
     if os.path.basename(os.getcwd()) == "src":
         os.chdir(os.path.dirname(os.getcwd()))
@@ -354,8 +364,7 @@ def main():
     font = pygame.font.SysFont(None, 28)
     big = pygame.font.SysFont(None, 48)
 
-    current_score = load_score()
-
+    pontuacao = load_score()
     assets = load_assets()
     level_pack = []
 
@@ -363,27 +372,27 @@ def main():
     level_index = 0
     level = None
 
-    running = True
-    while running:
+    rodando = True
+    while rodando:
         dt = clock.tick(FPS) / 1000.0
 
         events = pygame.event.get()
         for event in events:
             if event.type == pygame.QUIT:
-                running = False
+                rodando = False
 
         keys = pygame.key.get_pressed()
 
         if state == STATE_MENU:
             screen.fill((20, 25, 40))
-            draw_centered_text(screen, big, "Platformer Prototype", HEIGHT // 2 - 100)
+            draw_centered_text(screen, big, "Protótipo de Plataforma", HEIGHT // 2 - 100)
 
-            start_button = Button((WIDTH // 2 - 100, HEIGHT // 2 - 20, 200, 50), "Start Game", font)
-            quit_button = Button((WIDTH // 2 - 100, HEIGHT // 2 + 50, 200, 50), "Quit", font)
+            btn_jogar = Button((WIDTH // 2 - 100, HEIGHT // 2 - 20, 200, 50), "Começar", font)
+            btn_sair  = Button((WIDTH // 2 - 100, HEIGHT // 2 + 50, 200, 50), "Sair", font)
 
             mouse_pos = pygame.mouse.get_pos()
-            start_button.update_hover(mouse_pos)
-            quit_button.update_hover(mouse_pos)
+            btn_jogar.update_hover(mouse_pos)
+            btn_sair.update_hover(mouse_pos)
 
             for e in events:
                 if e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_SPACE):
@@ -391,43 +400,60 @@ def main():
                     level_pack = generate_level_pack(num_levels=3)
                     level_index = 0
                     level = Level(level_pack[level_index], assets)
-                if start_button.was_clicked(e):
+                if btn_jogar.was_clicked(e):
                     state = STATE_PLAYING
                     level_pack = generate_level_pack(num_levels=3)
                     level_index = 0
                     level = Level(level_pack[level_index], assets)
-                if quit_button.was_clicked(e):
-                    running = False
+                if btn_sair.was_clicked(e):
+                    rodando = False
 
-            start_button.draw(screen)
-            quit_button.draw(screen)
+            btn_jogar.draw(screen)
+            btn_sair.draw(screen)
             pygame.display.flip()
             continue
 
         if state == STATE_PLAYING:
+            # Eventos só do estado PLAYING
             for e in events:
                 if e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE:
                     state = STATE_PAUSED
                     break
+                # som de pulo ao apertar a tecla (Space/Up)
+                if e.type == pygame.KEYDOWN and e.key in (pygame.K_SPACE, pygame.K_UP) and getattr(level.player, 'on_ground', False):
+                    try:
+                        sfx = assets.get('sfx', {})
+                        snd = sfx.get('jump')
+                        if snd: snd.play()
+                    except Exception:
+                        pass
 
+            # Atualização do nível
             level.update(dt, keys)
             if level.lost:
-                current_score = subtract_points(3)
+                pontuacao = subtract_points(3)
                 state = STATE_LOST
             level.try_collect()
 
-            level.draw(screen, assets['background'])
+            # Desenho
+            level.draw(screen)
 
-            remaining = len(level.coins)
-            txt = font.render(f"Level {level_index + 1}/3  |  Gems left: {remaining}", True, (20, 20, 20))
+            restantes = len(level.coins)
+            txt = font.render(f"Nível {level_index + 1}/3  |  Moedas restantes: {restantes}", True, (20, 20, 20))
             screen.blit(txt, (16, 12))
 
-            # Score HUD (top-right)
-            score_txt = font.render(f"Score: {current_score}", True, (20, 20, 20))
-            screen.blit(score_txt, (WIDTH - score_txt.get_width() - 16, 12))
+            hud_score = font.render(f"Pontuação: {pontuacao}", True, (20, 20, 20))
+            screen.blit(hud_score, (WIDTH - hud_score.get_width() - 16, 12))
 
-            if remaining == 0 and level.at_exit():
-                current_score = add_points(1)
+            if restantes == 0 and level.at_exit():
+                # som da bandeira
+                try:
+                    sfx = assets.get('sfx', {})
+                    snd = sfx.get('flag')
+                    if snd: snd.play()
+                except Exception:
+                    pass
+                pontuacao = add_points(1)
                 level_index += 1
                 if level_index >= 3:
                     state = STATE_VICTORY
@@ -437,14 +463,15 @@ def main():
             pygame.display.flip()
             continue
 
+
         if state == STATE_PAUSED:
             screen.fill((0, 0, 0))
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 140))
             screen.blit(overlay, (0, 0))
 
-            draw_centered_text(screen, big, "Paused", HEIGHT // 2 - 30)
-            draw_centered_text(screen, font, "ESC = Resume   •   Q = Quit", HEIGHT // 2 + 20)
+            draw_centered_text(screen, big, "Pausado", HEIGHT // 2 - 30)
+            draw_centered_text(screen, font, "ESC = Voltar  •  Q = Sair", HEIGHT // 2 + 20)
             pygame.display.flip()
 
             for e in events:
@@ -452,50 +479,47 @@ def main():
                     if e.key == pygame.K_ESCAPE:
                         state = STATE_PLAYING
                     elif e.key == pygame.K_q:
-                        running = False
-
+                        rodando = False
             continue
 
         if state == STATE_LOST:
             screen.fill((20, 25, 40))
-            draw_centered_text(screen, big, "You fell!", HEIGHT // 2 - 100)
-            retry_button = Button((WIDTH // 2 - 120, HEIGHT // 2 - 10, 240, 50), "Retry from Level 1", font)
-            quit_button = Button((WIDTH // 2 - 120, HEIGHT // 2 + 60, 240, 50), "Quit", font)
+            draw_centered_text(screen, big, "Você caiu!", HEIGHT // 2 - 100)
+            btn_tentar = Button((WIDTH // 2 - 120, HEIGHT // 2 - 10, 240, 50), "Recomeçar do Nível 1", font)
+            btn_sair  = Button((WIDTH // 2 - 120, HEIGHT // 2 + 60, 240, 50), "Sair", font)
             mouse_pos = pygame.mouse.get_pos()
-            retry_button.update_hover(mouse_pos)
-            quit_button.update_hover(mouse_pos)
-            retry_button.draw(screen)
-            quit_button.draw(screen)
+            btn_tentar.update_hover(mouse_pos)
+            btn_sair.update_hover(mouse_pos)
+            btn_tentar.draw(screen)
+            btn_sair.draw(screen)
             for e in events:
-                if retry_button.was_clicked(e) or (
-                        e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_SPACE)):
+                if btn_tentar.was_clicked(e) or (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_SPACE)):
                     state = STATE_PLAYING
                     level_pack = generate_level_pack(num_levels=3)
                     level_index = 0
                     level = Level(level_pack[level_index], assets)
-                if quit_button.was_clicked(e) or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE):
-                    running = False
+                if btn_sair.was_clicked(e) or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE):
+                    rodando = False
             pygame.display.flip()
             clock.tick(FPS)
             continue
 
         if state == STATE_VICTORY:
             screen.fill((10, 10, 10))
-            draw_centered_text(screen, big, "You Win!", HEIGHT // 2 - 20)
-            draw_centered_text(screen, font, "Press ENTER to return to Menu • ESC to Quit", HEIGHT // 2 + 30)
+            draw_centered_text(screen, big, "Você Venceu!", HEIGHT // 2 - 20)
+            draw_centered_text(screen, font, "ENTER = Menu  •  ESC = Sair", HEIGHT // 2 + 30)
             pygame.display.flip()
 
             for e in events:
                 if e.type == pygame.KEYDOWN:
                     if e.key == pygame.K_ESCAPE:
-                        running = False
+                        rodando = False
                     if e.key == pygame.K_RETURN:
                         state = STATE_MENU
             continue
 
     pygame.quit()
     sys.exit()
-
 
 if __name__ == "__main__":
     main()

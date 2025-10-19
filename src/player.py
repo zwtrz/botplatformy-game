@@ -3,7 +3,7 @@ from settings import GRAVITY, JUMP_VELOCITY, TILE_SIZE, PLAYER_SPEED
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, pos, anims):
+    def __init__(self, pos, anims, sfx=None):
         super().__init__()
         self.anims = anims  # dict with 'idle','run','jump','fall' lists
         self.anim_state = 'idle'
@@ -37,6 +37,12 @@ class Player(pygame.sprite.Sprite):
         if (keys[pygame.K_SPACE] or keys[pygame.K_UP] or keys[pygame.K_w]) and self.on_ground:
             self.vel.y = JUMP_VELOCITY
             self.on_ground = False
+            try:
+                snd = self.sfx.get('jump') or self.sfx.get('coin')
+                if snd:
+                    snd.play()
+            except Exception:
+                pass
 
     def apply_gravity(self):
         self.vel.y += GRAVITY
